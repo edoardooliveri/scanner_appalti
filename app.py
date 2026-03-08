@@ -2,43 +2,37 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import StringIO
 
-# --- CONFIGURAZIONE GOOGLE SHEETS ---
-# 1. Crea un foglio Google con tre fogli (schede): "Albi", "Parole", "Storico"
-# 2. Condividilo come "Editor" con "Chiunque abbia il link"
-# 3. Incolla il link qui sotto
+# --- CONFIGURAZIONE ---
 URL_FOGLIO = "https://docs.google.com/spreadsheets/d/1HqSEWHR20Nyj5wMU_XcP7F4TxvKGLw2c-Tfhd4QeJOw/edit?usp=sharing"
 
-def leggi_cloud(gid):
+def leggi_cloud(gid, colonne_default):
     try:
         base_url = URL_FOGLIO.split('/edit')[0]
         csv_url = f"{base_url}/export?format=csv&gid={gid}"
         res = requests.get(csv_url)
-        return pd.read_csv(StringIO(res.text))
+        df = pd.read_csv(StringIO(res.text))
+        if df.empty:
+            return pd.DataFrame(columns=colonne_default)
+        return df
     except:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=colonne_default)
 
-# Funzione per salvare (ti servirà per l'archiviazione e aggiunta siti)
-def salva_cloud():
-    st.info("💡 Per salvare modifiche permanenti (aggiunta siti/parole), usa direttamente il Foglio Google. I tasti 'Aggiungi' qui sotto funzioneranno solo per la sessione corrente finché non collegheremo le API di scrittura.")
-
-# --- INTERFACCIA ---
 st.set_page_config(page_title="Scanner Appalti Cloud", layout="wide")
 
-# Carichiamo i dati dai GID (0 è il primo foglio, gli altri li trovi nell'URL del browser)
-# Sostituisci i numeri qui sotto con quelli del tuo foglio Google
-df_albi = leggi_cloud("0") # GID Foglio Albi
-df_p = leggi_cloud("176166623") # GID Foglio Parole
-df_storico = leggi_cloud("729073786") # GID Foglio Storico
+# Caricamento con "Paracadute" (se il foglio è vuoto, crea le colonne giuste)
+df_albi = leggi_cloud("0", ["Ente", "URL"])
+df_p = leggi_cloud("176166623", ["Parola"])
+df_storico = leggi_cloud("729073786", ["Data_Rilevazione", "Ente", "Oggetto", "Link_Diretto", "Archiviato"])
 
-# --- MOTORE DI RICERCA (IL TUO ORIGINALE) ---
+# --- MOTORE DI RICERCA ---
 def scansiona_preciso(url_albo, parole):
     risultati = []
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        res = requests.get(url_albo, headers=headers, timeout=20)
+        res = requests.get(url_albo, headers=headers, timeout=15)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for link in soup.find_all('a', href=True):
@@ -55,31 +49,32 @@ def scansiona_preciso(url_albo, parole):
     except: pass
     return risultati
 
-menu = st.sidebar.radio("Navigazione", ["🔍 Scansione", "📥 Dashboard (7gg)", "⚙️ Configurazione"])
+menu = st.sidebar.radio("Navigazione", ["🔍 Scansione", "📥 Dashboard", "⚙️ Configurazione"])
 
 if menu == "🔍 Scansione":
-    st.title("Avvia Ricerca Automatica")
+    st.title("Avvia Ricerca")
     if st.button("🚀 ANALIZZA TUTTI I SITI"):
-        bar = st.progress(0)
-        nuovi_ritrovamenti = []
-        for i, row in df_albi.iterrows():
-            st.write(f"Controllo: **{row['Ente']}**...")
-            trovati = scansiona_preciso(row['URL'], df_p['Parola'].tolist())
-            for t in trovati:
-                # Verifica se già presente nello storico cloud
-                if t['Link'] not in df_storico['Link_Diretto'].values:
-                    st.success(f"Nuovo trovato: {t['Oggetto']}")
-                    # Qui dovresti aggiungere la logica di scrittura su Sheets (opzionale se leggi solo)
-            bar.progress((i + 1) / len(df_albi))
-        st.success("Scansione completata!")
+        if df_albi.empty or df_p.empty:
+            st.error("Aggiungi dati nel Foglio Google!")
+        else:
+            bar = st.progress(0)
+            for i, row in df_albi.iterrows():
+                # Il controllo 'Ente' ora è protetto
+                nome_ente = row.get('Ente', 'Sconosciuto')
+                st.write(f"Controllo: **{nome_ente}**...")
+                
+                trovati = scansiona_preciso(row.get('URL', ''), df_p['Parola'].tolist())
+                for t in trovati:
+                    if t['Link'] not in df_storico['Link_Diretto'].values:
+                        st.success(f"Trovato: {t['Oggetto']}")
+                bar.progress((i + 1) / len(df_albi))
+            st.success("Scansione completata!")
 
-elif menu == "📥 Dashboard (7gg)":
-    st.title("Risultati Cloud")
-    # Mostra i dati dello storico caricati da Google Sheets
-    st.table(df_storico)
+elif menu == "📥 Dashboard":
+    st.title("Risultati")
+    st.write("Dati caricati dal cloud:")
+    st.dataframe(df_storico)
 
 elif menu == "⚙️ Configurazione":
     st.title("Database Cloud")
-    st.write("Per gestire i siti e le parole, usa il link di Google Sheets:")
     st.markdown(f"[🔗 APRI FOGLIO GOOGLE]({URL_FOGLIO})")
-    st.write("I dati appariranno qui automaticamente al prossimo aggiornamento.")
